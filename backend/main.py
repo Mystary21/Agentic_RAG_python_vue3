@@ -13,7 +13,10 @@ from core.tools import VectorStoreManager, VisionTool
 from core.synthesizer import ResponseSynthesizer
 
 # --- Configuration ---
-OLLAMA_BASE_URL = os.getenv("OLLAMA_HOST", "http://10.199.1.230:8082")
+# [CRITICAL FIX] .rstrip("/") ensures we never have double slashes (//) in the URL
+OLLAMA_BASE_URL = os.getenv("OLLAMA_HOST", "http://10.199.1.230:8082").rstrip("/")
+
+print(f"[System Config] OLLAMA_BASE_URL is set to: {OLLAMA_BASE_URL}")
 
 # --- FastAPI Setup ---
 app = FastAPI(title="Agentic RAG API", version="1.0.0")
@@ -32,8 +35,7 @@ vector_store = None
 vision_tool = None
 synthesizer = None
 
-# --- API Models (必須放在 Endpoints 之前!) ---
-
+# --- API Models ---
 class ChatRequest(BaseModel):
     query: str
     history: List[Dict[str, str]] = Field(default_factory=list)
@@ -44,28 +46,27 @@ class IngestRequest(BaseModel):
     metadata: Dict[str, Any]
 
 # --- Startup Event ---
-
 @app.on_event("startup")
 async def startup_event():
     global reasoning_engine, vector_store, vision_tool, synthesizer
     print(f"[System] Connecting to Ollama at {OLLAMA_BASE_URL}...")
-    
+
+    # Initialize all engines with the sanitized URL
     reasoning_engine = ReasoningEngine(ollama_base_url=OLLAMA_BASE_URL)
     vector_store = VectorStoreManager(ollama_base_url=OLLAMA_BASE_URL)
     vision_tool = VisionTool(ollama_base_url=OLLAMA_BASE_URL)
     synthesizer = ResponseSynthesizer(ollama_base_url=OLLAMA_BASE_URL)
-    
+
     print("[System] All modules initialized successfully.")
 
 # --- Endpoints ---
-
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     try:
         user_query = request.query
         history = request.history
         image_data = request.image_data
-        
+
         # Phase 1: Reasoning
         if image_data:
             intent = IntentType.VISION_QA
@@ -79,10 +80,10 @@ async def chat_stream(request: ChatRequest):
         tool_output = ""
         if intent == IntentType.VISION_QA and image_data:
             tool_output = await vision_tool.analyze_image(image_data, prompt=user_query)
-            
+
         elif intent == IntentType.SEARCH:
             tool_output = await vector_store.search(user_query, top_k=3)
-            
+
         elif intent == IntentType.CALCULATE:
              tool_output = "Calculator tool not yet implemented."
 
@@ -99,7 +100,11 @@ async def chat_stream(request: ChatRequest):
 
     except Exception as e:
         print(f"[Error] Processing failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Return a simplified error message to the frontend instead of crashing 500
+        return StreamingResponse(
+            iter([f"System Error: {str(e)}"]),
+            media_type="text/event-stream"
+        )
 
 @app.post("/ingest")
 async def ingest_document(request: IngestRequest):
@@ -113,12 +118,9 @@ async def ingest_document(request: IngestRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- Static Files & Frontend Serving ---
-
-# Mount 'static' folder (Vue build output) to /assets
 if os.path.exists("static"):
     app.mount("/assets", StaticFiles(directory="static/assets"), name="assets")
 
-# Catch-all route for SPA (Vue Router)
 @app.get("/{catchall:path}")
 async def read_index(catchall: str):
     if os.path.exists("static/index.html"):
