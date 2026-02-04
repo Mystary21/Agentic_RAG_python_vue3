@@ -4,3 +4,4 @@ cd Agentic_RAG/frontend
 
 
 npm install
+npm run build
